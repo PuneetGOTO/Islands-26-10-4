@@ -1,108 +1,112 @@
 --[[ ============================================================================
-  Roblox GUI 屬性探測器
+  Roblox GUI 成員探測器  (v2)
   ============================================================================
   用途：在 Roblox 中實際執行，確認每個 GUI 類別「真的有」哪些屬性／事件。
-        用來避免「在錯誤的物件上用不存在的成員」這類錯誤
-        （例如 TextButton 沒有 FocusLost）。
+        用來事前抓出「在錯誤的物件上用不存在的成員」這類錯誤。
 
-  用法：把本檔貼進執行器執行即可，結果會印在輸出視窗。
-        不需要遊戲載入、不需要任何權限。
+  v2 變更：輸出改為純 ASCII、不使用 tab、每項一行。
+           前一版的 CJK 與對齊在部分執行器輸出視窗會被打亂，
+           導致無法判讀。
+
+  用法：整份貼進執行器執行即可。不需要遊戲載入。
 ============================================================================ ]]
 
 local probe = {
 	{ Class = "TextButton", Members = {
 		"FocusLost", "Focused", "ClearTextOnFocus", "PlaceholderText", "PlaceholderColor3",
-		"Text", "TextColor3", "TextSize", "Font", "TextWrapped", "TextTruncate", "TextScaled",
-		"RichText", "AutoButtonColor", "MultiLine", "TextEditable",
-		"MouseButton1Click", "MouseButton1Down", "MouseButton1Up",
-		"MouseEnter", "MouseLeave", "Activated", "SelectionImageObject"
+		"MultiLine", "TextEditable", "SelectionImageObject",
+		"Text", "TextSize", "TextWrapped", "TextTruncate", "TextScaled", "RichText",
+		"AutoButtonColor", "MouseButton1Click", "MouseEnter"
 	}},
 	{ Class = "TextBox", Members = {
-		"FocusLost", "Focused", "ClearTextOnFocus", "PlaceholderText", "PlaceholderColor3",
-		"Text", "TextColor3", "TextSize", "Font", "TextWrapped", "TextTruncate", "TextScaled",
-		"RichText", "MultiLine", "TextEditable", "SelectionStart", "CursorPosition",
-		"ReturnPressedFromOnScreenKeyboard"
+		"TextTruncate", "TextScaled",
+		"FocusLost", "Focused", "ClearTextOnFocus", "PlaceholderText", "MultiLine"
 	}},
 	{ Class = "Frame", Members = {
 		"Text", "TextColor3", "TextSize", "Font", "TextWrapped", "TextTruncate",
-		"PlaceholderText", "BackgroundColor3", "BackgroundTransparency",
-		"AbsolutePosition", "AbsoluteSize", "AutomaticSize", "ClipsDescendants",
-		"GetPropertyChangedSignal", "InputBegan", "InputChanged", "InputEnded"
+		"TextScaled", "RichText", "PlaceholderText", "PlaceholderColor3",
+		"TextXAlignment", "TextYAlignment",
+		"BackgroundColor3", "AutomaticSize", "ClipsDescendants",
+		"AbsolutePosition", "AbsoluteSize", "GetPropertyChangedSignal"
 	}},
 	{ Class = "ScrollingFrame", Members = {
+		"Text", "TextSize", "Font", "PlaceholderText",
 		"CanvasSize", "CanvasPosition", "AbsoluteCanvasSize", "AutomaticCanvasSize",
-		"ScrollBarThickness", "ScrollBarImageColor3", "ScrollBarImageTransparency",
-		"Text", "GetPropertyChangedSignal"
+		"ScrollBarThickness", "ScrollBarImageColor3", "GetPropertyChangedSignal"
 	}},
 	{ Class = "TextLabel", Members = {
-		"Text", "TextColor3", "TextSize", "Font", "TextWrapped", "TextTruncate",
-		"TextScaled", "RichText", "AutomaticSize", "TextBounds", "FocusLost"
+		"FocusLost", "Focused", "ClearTextOnFocus", "PlaceholderText",
+		"Text", "TextSize", "TextWrapped", "TextTruncate", "AutomaticSize", "TextBounds"
 	}},
 	{ Class = "UIStroke", Members = {
-		"Color", "Thickness", "Transparency", "ApplyStrokeMode", "LineJoinMode",
-		"CornerRadius", "BackgroundColor3"
+		"CornerRadius", "BackgroundColor3",
+		"Color", "Thickness", "Transparency", "ApplyStrokeMode"
 	}},
 	{ Class = "UICorner", Members = {
-		"CornerRadius", "Color", "Thickness", "Transparency"
+		"Color", "Thickness", "Transparency",
+		"CornerRadius"
 	}},
 	{ Class = "UIGradient", Members = {
-		"Color", "Color3", "Transparency", "Rotation", "Offset", "Enabled"
+		"Color3",
+		"Color", "Transparency", "Rotation", "Enabled"
 	}},
 	{ Class = "UIListLayout", Members = {
 		"Padding", "FillDirection", "HorizontalAlignment", "VerticalAlignment",
-		"SortOrder", "HorizontalFlex", "VerticalFlex", "Wraps"
+		"SortOrder", "HorizontalFlex", "Wraps"
 	}},
 	{ Class = "UIPadding", Members = {
 		"PaddingTop", "PaddingBottom", "PaddingLeft", "PaddingRight"
 	}},
-	{ Class = "UISizeConstraint", Members = {
-		"MaxSize", "MinSize"
-	}},
+	{ Class = "UISizeConstraint", Members = { "MaxSize", "MinSize" }},
 	{ Class = "ScreenGui", Members = {
 		"Enabled", "DisplayOrder", "ResetOnSpawn", "IgnoreGuiInset", "ZIndexBehavior"
 	}},
 }
 
 local parent = Instance.new("Folder")
-local report = {}
-local problems = 0
+local out = {}
+local totalMissing = 0
 
-table.insert(report, "=== Roblox GUI 成員探測結果 ===")
-table.insert(report, "")
+local function emit(s) table.insert(out, s) end
+
+emit("=== GUI member probe (v2) ===")
+emit("")
 
 for _, group in ipairs(probe) do
 	local ok, inst = pcall(Instance.new, group.Class)
 	if not ok or not inst then
-		table.insert(report, string.format("%-16s ❌ 無法建立", group.Class))
-		problems = problems + 1
+		emit("CLASS " .. group.Class .. " : CANNOT_CREATE")
+		totalMissing = totalMissing + 1
 	else
 		inst.Parent = parent
 		local missing = {}
+		local present = 0
 		for _, member in ipairs(group.Members) do
-			-- 屬性用 rawget 檢查較快，但事件是實例成員，統一用 pcall 讀取
 			local readOk, value = pcall(function() return inst[member] end)
-			if not readOk or value == nil then
+			if readOk and value ~= nil then
+				present = present + 1
+			else
 				table.insert(missing, member)
 			end
 		end
+
 		if #missing == 0 then
-			table.insert(report, string.format("%-16s ✅ 全部存在（%d 項）", group.Class, #group.Members))
+			emit("CLASS " .. group.Class .. " : OK (all " .. tostring(#group.Members) .. " present)")
 		else
-			table.insert(report, string.format("%-16s ⚠️ 不存在：%s", group.Class, table.concat(missing, ", ")))
-			problems = problems + #missing
+			emit("CLASS " .. group.Class .. " : " .. tostring(present) .. "/" ..
+				tostring(#group.Members) .. " present, MISSING -> " .. table.concat(missing, " "))
+			totalMissing = totalMissing + #missing
 		end
 	end
 end
 
-table.insert(report, "")
-table.insert(report, problems == 0
-	and "結果：所有探測的成員都存在。"
-	or ("結果：共 " .. tostring(problems) .. " 個成員不存在（對應的就是會出錯的用法）。"))
-table.insert(report, "")
-table.insert(report, "重點對照：")
-table.insert(report, "  TextButton 不該有 FocusLost / Focused / ClearTextOnFocus")
-table.insert(report, "  Frame 不該有 Text / Font / TextSize")
-table.insert(report, "  TextBox 不該有 TextTruncate / TextScaled")
+emit("")
+emit("TOTAL_MISSING=" .. tostring(totalMissing))
+emit("")
+emit("How to read this:")
+emit("  A line 'MISSING -> X' lists members that class does NOT have.")
+emit("  Those are exactly the member names that crash if you use them.")
+emit("  'OK' means every probed member exists on that class.")
 
 parent:Destroy()
-print(table.concat(report, "\n"))
+print(table.concat(out, "\n"))
