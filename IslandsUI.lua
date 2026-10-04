@@ -29,6 +29,7 @@ local __ENGINE__ = (function()
 --[[
 ================================================================================
   IDENTICAL UI — FLUENT 相容引擎  (FluentCompat)
+  BUILD: 2026-10-04-enumfix
 ================================================================================
   目的：提供與 Fluent / SaveManager / InterfaceManager 相同的 API 表面，
         讓既有呼叫端（IslandsScript.lua 約 4700 行 UI 建構程式）不必修改
