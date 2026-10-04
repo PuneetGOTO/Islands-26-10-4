@@ -1,0 +1,5 @@
+# 強制以 LF 儲存與輸出，確保 GitHub raw 給出的位元組與驗證過的一致。
+# 若讓 Git 自動轉成 CRLF，raw 下載會多出 \r，對 loadstring 是無謂風險。
+*.lua   text eol=lf
+*.js    text eol=lf
+*.md    text eol=lf
