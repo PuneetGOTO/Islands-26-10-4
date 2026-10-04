@@ -1,7 +1,7 @@
 --[[
 ================================================================================
   IDENTICAL UI — FLUENT 相容引擎  (FluentCompat)
-  BUILD: 2026-10-04-scopefix
+  BUILD: 2026-10-04-focusfix
 ================================================================================
   目的：提供與 Fluent / SaveManager / InterfaceManager 相同的 API 表面，
         讓既有呼叫端（IslandsScript.lua 約 4700 行 UI 建構程式）不必修改
@@ -1495,6 +1495,18 @@ local function CreateWindow(root, config)
 
             local listening = false
             local held = false
+            local listenToken = 0
+
+            -- 取消監聽並還原顯示。
+            -- 注意：TextButton 沒有 FocusLost（那是 TextBox 專屬），
+            -- 所以不能靠 FocusLost 收尾，改用逾時。
+            local function cancelListening()
+                listening = false
+                listenToken = listenToken + 1
+                btn.Text = keyName
+                btn.TextColor3 = Theme.Text
+                TweenService:Create(stroke, TweenFast, { Color = Theme.Border }):Play()
+            end
 
             local el = {
                 Instance = row,
@@ -1525,16 +1537,18 @@ local function CreateWindow(root, config)
 
             btn.MouseButton1Click:Connect(function()
                 listening = true
+                listenToken = listenToken + 1
+                local myToken = listenToken
                 btn.Text = "..."
                 btn.TextColor3 = Theme.AccentSoft
                 TweenService:Create(stroke, TweenFast, { Color = Theme.Accent }):Play()
-            end)
 
-            btn.FocusLost:Connect(function()
-                listening = false
-                btn.Text = keyName
-                btn.TextColor3 = Theme.Text
-                TweenService:Create(stroke, TweenFast, { Color = Theme.Border }):Play()
+                -- 5 秒內沒有按下任何鍵就取消，避免一直卡在監聽狀態
+                task.delay(5, function()
+                    if listening and listenToken == myToken then
+                        cancelListening()
+                    end
+                end)
             end)
 
             Track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -1545,12 +1559,9 @@ local function CreateWindow(root, config)
                         or input.UserInputType == Enum.UserInputType.MouseButton2 then
                         keyName = input.UserInputType.Name
                     end
-                    listening = false
+                    cancelListening()
                     el.Key = keyName
                     el.Value = keyName
-                    btn.Text = keyName
-                    btn.TextColor3 = Theme.Text
-                    TweenService:Create(stroke, TweenFast, { Color = Theme.Border }):Play()
                     SafeCall(cfg.ChangedCallback, Enum.KeyCode[keyName] or input.UserInputType)
                     return
                 end
