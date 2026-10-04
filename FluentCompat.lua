@@ -1,7 +1,7 @@
 --[[
 ================================================================================
   IDENTICAL UI — FLUENT 相容引擎  (FluentCompat)
-  BUILD: 2026-10-04-containerfix
+  BUILD: 2026-10-04-scopefix
 ================================================================================
   目的：提供與 Fluent / SaveManager / InterfaceManager 相同的 API 表面，
         讓既有呼叫端（IslandsScript.lua 約 4700 行 UI 建構程式）不必修改
@@ -695,9 +695,14 @@ local function CreateWindow(root, config)
 
             -- 回傳帶有完整 Add* 的宿主；與分頁同一個機制，
             -- 因此 Section:Add* 與 Tab:Add* 行為一致。
+            --
+            -- 注意：這裡刻意「不」呼叫 finishElement。宿主本來就帶有完整的
+            -- Add*（host.AddToggle 等都定義在宿主上），而 finishElement 是
+            -- BuildElementHost 內的區域函式，在這個作用域看不到它 ——
+            -- 呼叫它會解析成全域 nil，造成 "attempt to call a nil value"。
             local sectionHost = BuildElementHost(section)
             sectionHost._isSection = true
-            return finishElement(sectionHost)
+            return sectionHost
         end
 
         -- 分頁層級也直接具備控件方法（Tab:AddParagraph 形式）。
@@ -805,7 +810,7 @@ local function CreateWindow(root, config)
 
         -- 安全地追蹤容器的位置變化（用於浮動面板重貼齊）。
         -- 容器不一定是 GuiObject，因此先確認可讀取 AbsolutePosition 再連線。
-        local function trackContainerPosition(fn, includeScroll)
+        local function trackContainerPosition(container, fn, includeScroll)
             if typeof(container) ~= "Instance" then return end
             local ok = pcall(function() return container.AbsolutePosition end)
             if not ok then return end
@@ -1309,7 +1314,7 @@ local function CreateWindow(root, config)
             end)
 
             -- 捲動／尺寸變化時重貼齊（容器可能不是 GuiObject，走安全輔助）
-            trackContainerPosition(function()
+            trackContainerPosition(container, function()
                 if list.Visible then layoutList() end
             end, true)
 
@@ -1760,7 +1765,7 @@ local function CreateWindow(root, config)
             end)
 
             -- 容器位置變化時重貼齊（容器可能不是 GuiObject，走安全輔助）
-            trackContainerPosition(function()
+            trackContainerPosition(container, function()
                 if panel.Visible then placePanel() end
             end, true)
 
@@ -2395,6 +2400,99 @@ pcall(function()
         g.FluentCompat = Library
         g.IdenticalUI = Library
         g.IdenticalUIDemo = BuildDemoWindow
+
+        -- 自我檢測：列出每個物件實際具備的方法，並回報缺少的預期方法。
+        -- 遇到 "missing method" 或 "attempt to call a nil value" 時，
+        -- 執行 getgenv().IdenticalUIDoctor() 即可立刻定位。
+        g.IdenticalUIDoctor = function()
+            local expectedContainer = {
+                "AddToggle", "AddSlider", "AddDropdown", "AddButton",
+                "AddInput", "AddKeybind", "AddColorpicker",
+                "AddParagraph", "AddSection"
+            }
+            local expectedElement = { "OnChanged", "SetValue", "SetTitle", "SetDesc" }
+
+            local report = {}
+            local problems = 0
+
+            local function checkObject(label, obj, expected)
+                if type(obj) ~= "table" then
+                    table.insert(report, string.format("  %-30s X 不是 table（得到 %s）", label, type(obj)))
+                    problems = problems + 1
+                    return
+                end
+                local missing = {}
+                for _, name in ipairs(expected) do
+                    if type(obj[name]) ~= "function" then
+                        table.insert(missing, name)
+                    end
+                end
+                if #missing == 0 then
+                    table.insert(report, string.format("  %-30s OK", label))
+                else
+                    table.insert(report, string.format("  %-30s X 缺少：%s", label, table.concat(missing, ", ")))
+                    problems = problems + #missing
+                end
+            end
+
+            local win = Library.Window
+            if not win then
+                warn("[IdenticalUIDoctor] 尚未建立視窗。請先執行腳本，或呼叫 getgenv().FluentCompat.Demo。")
+                return nil
+            end
+
+            table.insert(report, "=== Identical UI 自我檢測 ===")
+            table.insert(report, "")
+            table.insert(report, "Window 層級：")
+            checkObject("Window", win, { "AddTab", "SelectTab", "Dialog" })
+            checkObject("Library", Library, { "CreateWindow", "Notify", "Options" })
+
+            table.insert(report, "")
+            table.insert(report, "分頁：")
+            local tabCount = 0
+            local probeSection = nil
+            for key, page in pairs((win.Tabs or {})) do
+                tabCount = tabCount + 1
+                checkObject(tostring(key), page, expectedContainer)
+                if not probeSection and type(page.AddSection) == "function" then
+                    local ok, sec = pcall(function() return page:AddSection("__doctor_probe__") end)
+                    if ok and sec then probeSection = sec end
+                end
+            end
+            if tabCount == 0 then
+                table.insert(report, "  （沒有分頁）")
+            end
+
+            table.insert(report, "")
+            table.insert(report, "Section（實測建立一個）：")
+            if probeSection then
+                checkObject("Section", probeSection, expectedContainer)
+                -- 這裡正是先前 "attempt to call a nil value" 的發生點
+                local ok, para = pcall(function()
+                    return probeSection:AddParagraph({ Title = "probe", Content = "probe" })
+                end)
+                if ok and type(para) == "table" then
+                    checkObject("Section:AddParagraph()", para, expectedElement)
+                    pcall(function() para:SetDesc("probe") end)
+                    pcall(function() para.Instance:Destroy() end)
+                else
+                    table.insert(report, "  X Section:AddParagraph() 失敗：" .. tostring(para))
+                    problems = problems + 1
+                end
+                pcall(function() probeSection.Instance:Destroy() end)
+            else
+                table.insert(report, "  （無法建立 section 進行實測）")
+                problems = problems + 1
+            end
+
+            table.insert(report, "")
+            table.insert(report, problems == 0
+                and "結果：全部通過，介面 API 完整"
+                or ("結果：發現 " .. tostring(problems) .. " 個問題"))
+
+            print(table.concat(report, "\n"))
+            return problems == 0
+        end
     end
 end)
 
