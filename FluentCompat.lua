@@ -1,7 +1,7 @@
 --[[
 ================================================================================
   IDENTICAL UI — FLUENT 相容引擎  (FluentCompat)
-  BUILD: 2026-10-04-enumfix
+  BUILD: 2026-10-04-containerfix
 ================================================================================
   目的：提供與 Fluent / SaveManager / InterfaceManager 相同的 API 表面，
         讓既有呼叫端（IslandsScript.lua 約 4700 行 UI 建構程式）不必修改
@@ -687,62 +687,22 @@ local function CreateWindow(root, config)
             slayout.SortOrder = Enum.SortOrder.LayoutOrder
             slayout.Parent = section
 
-            local head = NewLabel(section, tostring(sectionTitle or ""):upper(), 11, Theme.Accent, Enum.Font.GothamBold)
+            local head = NewLabel(section,
+                tostring(tostring(sectionTitle or ""):upper()),
+                11, Theme.Accent, Enum.Font.GothamBold)
             head.Size = UDim2.new(1, 0, 0, 18)
             head.LayoutOrder = 0
 
-            return BuildElementHost(section, slayout)
+            -- 回傳帶有完整 Add* 的宿主；與分頁同一個機制，
+            -- 因此 Section:Add* 與 Tab:Add* 行為一致。
+            local sectionHost = BuildElementHost(section)
+            sectionHost._isSection = true
+            return finishElement(sectionHost)
         end
 
-        methods.AddParagraph = function(self, paragraphConfig)
-            paragraphConfig = paragraphConfig or {}
-            sectionOrder = sectionOrder + 1
-            local holder = Instance.new("Frame")
-            holder.Name = RandName()
-            holder.Size = UDim2.new(1, 0, 0, 0)
-            holder.AutomaticSize = Enum.AutomaticSize.Y
-            holder.BackgroundTransparency = 1
-            holder.LayoutOrder = sectionOrder -- 與其他元素共用同一序號，保留插入順序
-            holder.Parent = page
-
-            local pl = Instance.new("UIListLayout")
-            pl.Padding = UDim.new(0, 3)
-            pl.SortOrder = Enum.SortOrder.LayoutOrder
-            pl.Parent = holder
-
-            local t = NewLabel(holder, tostring(paragraphConfig.Title or ""), 12, Theme.Text, Enum.Font.GothamMedium)
-            t.Size = UDim2.new(1, 0, 0, 16)
-            t.LayoutOrder = 1
-            t.TextWrapped = true
-            t.AutomaticSize = Enum.AutomaticSize.Y
-
-            local d = NewLabel(holder, tostring(paragraphConfig.Content or paragraphConfig.Description or ""),
-                11, Theme.TextSub)
-            d.Size = UDim2.new(1, 0, 0, 14)
-            d.LayoutOrder = 2
-            d.TextWrapped = true
-            d.AutomaticSize = Enum.AutomaticSize.Y
-
-            local el = {
-                Instance = holder,
-                Title = paragraphConfig.Title,
-                Description = paragraphConfig.Content,
-                _titleLabel = t,
-                _descLabel = d
-            }
-            el.SetDesc = function(self, v)
-                d.Text = tostring(v)
-                return self
-            end
-            el.SetTitle = function(self, v)
-                t.Text = tostring(v)
-                return self
-            end
-            el.SetValue = function(self) return self end
-            return el
-        end
-
-        -- 分頁層級也直接具備控件方法（Tab:AddToggle 形式）
+        -- 分頁層級也直接具備控件方法（Tab:AddParagraph 形式）。
+        -- AddParagraph 不在此另行實作 —— 由宿主版本提供，
+        -- 這樣分頁與 section 的行為保證一致。
         local pageHost = BuildElementHost(page, layout)
         for k, v in pairs(methods) do
             pageHost[k] = v
@@ -781,6 +741,86 @@ local function CreateWindow(root, config)
                 NewCorner(row, 4)
             end
             return row
+        end
+
+        -- 通用子容器建立器
+        -- 真實的 Fluent 允許任何 Add* 產生的物件再叫 Add*（例如
+        -- Section:AddParagraph、Section:AddToggle）。這裡讓每個元素都能取得
+        -- 一組 Add*，委派到「以自己為父容器」的宿主上，避免再出現
+        -- "attempt to call missing method 'AddX'"。
+        -- 注意：參數名刻意用 childContainer，避免遮蔽外層的 container。
+        local function genericBuilder(element)
+            local childContainer = nil
+            if typeof(element) == "Instance"
+                and (element:IsA("GuiObject") or element:IsA("LayerCollector")) then
+                childContainer = element
+            elseif type(element) == "table" and typeof(element.Instance) == "Instance" then
+                childContainer = element.Instance
+            end
+            if not childContainer then
+                childContainer = container
+            end
+
+            local child = BuildElementHost(childContainer)
+            local u = rawget(child, "_universal")
+            if u then return u end
+
+            -- 只有「容器型」物件（分頁與 section）可以再容納子元件。
+            -- 這是語意判斷而非型別判斷：我們的 column 其實也是 Frame，
+            -- 若讓它也能 AddDropdown，下拉選單會被建進一個小列裡，
+            -- 而浮動清單是以 mainFrame 為基準定位的，會嚴重錯位。
+            local isContainer = (type(element) == "table")
+                and (element._isTab == true or element._isSection == true)
+            if not isContainer then
+                return {}
+            end
+
+            local proxy = {}
+            local builderNames = {
+                "AddToggle", "AddSlider", "AddDropdown", "AddButton",
+                "AddInput", "AddKeybind", "AddColorpicker",
+                "AddParagraph", "AddSection"
+            }
+            for _, name in ipairs(builderNames) do
+                if type(child[name]) == "function" then
+                    proxy[name] = function(_, ...)
+                        return child[name](child, ...)
+                    end
+                end
+            end
+
+            rawset(child, "_universal", proxy)
+            return proxy
+        end
+
+        -- 註冊一個元素：賦予通用 Add* 能力後回傳
+        local function finishElement(element)
+            for k, v in pairs(genericBuilder(element)) do
+                if element[k] == nil then
+                    element[k] = v
+                end
+            end
+            return element
+        end
+
+        -- 安全地追蹤容器的位置變化（用於浮動面板重貼齊）。
+        -- 容器不一定是 GuiObject，因此先確認可讀取 AbsolutePosition 再連線。
+        local function trackContainerPosition(fn, includeScroll)
+            if typeof(container) ~= "Instance" then return end
+            local ok = pcall(function() return container.AbsolutePosition end)
+            if not ok then return end
+            pcall(function()
+                container:GetPropertyChangedSignal("AbsolutePosition"):Connect(fn)
+            end)
+            if includeScroll then
+                local isScroll = false
+                pcall(function() isScroll = container:IsA("ScrollingFrame") end)
+                if isScroll then
+                    pcall(function()
+                        container:GetPropertyChangedSignal("CanvasPosition"):Connect(fn)
+                    end)
+                end
+            end
         end
 
         -- 標題 + 說明
@@ -863,7 +903,7 @@ local function CreateWindow(root, config)
             end)
 
             RegisterElement(id, el)
-            return el
+            return finishElement(el)
         end
 
         -- ---------------- 滑桿 ----------------
@@ -992,7 +1032,7 @@ local function CreateWindow(root, config)
 
             applyVisual()
             RegisterElement(id, el)
-            return el
+            return finishElement(el)
         end
 
         -- ---------------- 下拉選單 ----------------
@@ -1004,29 +1044,52 @@ local function CreateWindow(root, config)
             local row = makeRow(44)
             attachText(row, cfg)
 
+            -- Default 可能有三種形式：{"wheat"}（表）、"wheat"（字串）、1（數字索引）。
+            -- 數字索引必須解析成 values[n] —— 實際 Fluent 就是這個行為，
+            -- 若直接把數字當成選中值，選單會顯示「1」而不是對應選項。
+            local function resolveDefaultIndex(n)
+                local idx = math.floor(tonumber(n) or 0)
+                if idx >= 1 and idx <= #values then
+                    return values[idx]
+                end
+                return nil
+            end
+
             local selected = nil
             if multi then
                 selected = {}
                 local def = cfg.Default
                 if type(def) == "table" then
-                    for k, v in pairs(def) do selected[k] = v end
-                    -- 陣列形式的預設值
-                    for _, v in ipairs(def) do selected[v] = true end
+                    for _, v in ipairs(def) do
+                        if type(v) == "number" then
+                            local resolved = resolveDefaultIndex(v)
+                            if resolved ~= nil then selected[resolved] = true end
+                        else
+                            selected[v] = true
+                        end
+                    end
+                elseif type(def) == "number" then
+                    local resolved = resolveDefaultIndex(def)
+                    if resolved ~= nil then selected[resolved] = true end
                 elseif type(def) == "string" then
                     selected[def] = true
                 end
             else
-                if type(cfg.Default) == "table" then
-                    selected = cfg.Default[1]
+                local def = cfg.Default
+                if type(def) == "table" then
+                    def = def[1]
+                end
+                if type(def) == "number" then
+                    selected = resolveDefaultIndex(def)
                 else
-                    selected = cfg.Default
+                    selected = def
                 end
                 if selected == nil then selected = values[1] end
             end
 
             local box = Instance.new("TextButton")
             box.Name = RandName()
-            box.Size = UDim2.new(0, sidebarW and 170 or 170, 0, 28)
+            box.Size = UDim2.new(0, 170, 0, 28)
             box.Position = UDim2.new(1, -176, 0, 8)
             box.BackgroundColor3 = Color3.fromRGB(13, 10, 20)
             box.AutoButtonColor = false
@@ -1245,18 +1308,13 @@ local function CreateWindow(root, config)
                 setOpen(not list.Visible)
             end)
 
-            -- 捲動／尺寸變化時重貼齊
-            container:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+            -- 捲動／尺寸變化時重貼齊（容器可能不是 GuiObject，走安全輔助）
+            trackContainerPosition(function()
                 if list.Visible then layoutList() end
-            end)
-            if container:IsA("ScrollingFrame") then
-                container:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
-                    if list.Visible then layoutList() end
-                end)
-            end
+            end, true)
 
             RegisterElement(id, el)
-            return el
+            return finishElement(el)
         end
 
         -- ---------------- 按鈕 ----------------
@@ -1318,7 +1376,7 @@ local function CreateWindow(root, config)
                     return self
                 end
             }
-            return el
+            return finishElement(el)
         end
 
         -- ---------------- 文字輸入 ----------------
@@ -1406,7 +1464,7 @@ local function CreateWindow(root, config)
             end)
 
             RegisterElement(id, el)
-            return el
+            return finishElement(el)
         end
 
         -- ---------------- 按鍵綁定 ----------------
@@ -1514,7 +1572,7 @@ local function CreateWindow(root, config)
 
             el.ToggleState = false
             RegisterElement(id, el)
-            return el
+            return finishElement(el)
         end
 
         -- ---------------- 顏色選擇器 ----------------
@@ -1701,17 +1759,97 @@ local function CreateWindow(root, config)
                 setOpen(not panel.Visible)
             end)
 
-            container:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+            -- 容器位置變化時重貼齊（容器可能不是 GuiObject，走安全輔助）
+            trackContainerPosition(function()
                 if panel.Visible then placePanel() end
-            end)
-            if container:IsA("ScrollingFrame") then
-                container:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
-                    if panel.Visible then placePanel() end
-                end)
-            end
+            end, true)
 
             RegisterElement(id, el)
-            return el
+            return finishElement(el)
+        end
+
+        -- ---------------- 段落 ----------------
+        -- 必須放在宿主上：呼叫端也會對 section 呼叫
+        -- （例如 BlockPrinterSelection:AddParagraph{...}），
+        -- 只掛在分頁上會出現 "attempt to call missing method 'AddParagraph'"。
+        host.AddParagraph = function(_, cfg)
+            cfg = cfg or {}
+
+            local holder = Instance.new("Frame")
+            holder.Name = RandName()
+            holder.Size = UDim2.new(1, 0, 0, 0)
+            holder.AutomaticSize = Enum.AutomaticSize.Y
+            holder.BackgroundTransparency = 1
+            holder.LayoutOrder = nextOrder()
+            holder.Parent = container
+
+            local layout = Instance.new("UIListLayout")
+            layout.Padding = UDim.new(0, 3)
+            layout.SortOrder = Enum.SortOrder.LayoutOrder
+            layout.Parent = holder
+
+            local titleText = cfg.Title
+            if titleText == nil then titleText = cfg.Name end
+
+            local titleLabel
+            if titleText ~= nil and tostring(titleText) ~= "" then
+                titleLabel = NewLabel(holder, tostring(titleText), 12, Theme.Text, Enum.Font.GothamMedium)
+                titleLabel.Size = UDim2.new(1, 0, 0, 16)
+                titleLabel.LayoutOrder = 1
+                titleLabel.TextWrapped = true
+                titleLabel.AutomaticSize = Enum.AutomaticSize.Y
+            end
+
+            local bodyText = cfg.Content
+            if bodyText == nil then bodyText = cfg.Description end
+
+            local descLabel
+            if bodyText ~= nil and tostring(bodyText) ~= "" then
+                descLabel = NewLabel(holder, tostring(bodyText), 11, Theme.TextSub)
+                descLabel.Size = UDim2.new(1, 0, 0, 14)
+                descLabel.LayoutOrder = 2
+                descLabel.TextWrapped = true
+                descLabel.AutomaticSize = Enum.AutomaticSize.Y
+            end
+
+            local el = {
+                Instance = holder,
+                Type = "Paragraph",
+                Title = titleText,
+                Description = bodyText,
+                _titleLabel = titleLabel,
+                _descLabel = descLabel,
+                Value = nil
+            }
+
+            -- 段落沒有回呼；OnChanged / SetValue 僅為介面相容
+            el.OnChanged = function(self) return self end
+            el.SetValue = function(self) return self end
+            el.FireChanged = function() end
+
+            el.SetTitle = function(self, v)
+                if titleLabel then
+                    titleLabel.Text = tostring(v)
+                end
+                self.Title = v
+                return self
+            end
+
+            -- SetDesc 是段落最常用的方法（BlockPrinterBlocks:SetDesc(...)）
+            el.SetDesc = function(self, v)
+                if not descLabel then
+                    descLabel = NewLabel(holder, tostring(v), 11, Theme.TextSub)
+                    descLabel.Size = UDim2.new(1, 0, 0, 14)
+                    descLabel.LayoutOrder = 2
+                    descLabel.TextWrapped = true
+                    descLabel.AutomaticSize = Enum.AutomaticSize.Y
+                    self._descLabel = descLabel
+                end
+                descLabel.Text = tostring(v)
+                return self
+            end
+
+            return finishElement(el)
         end
 
         hostCache[container] = host

@@ -1,0 +1,35 @@
+Fix missing Add* methods on non-tab containers; resolve numeric dropdown Default
+
+修正兩個執行期缺陷。兩者都是「只驗證了主路徑、沒驗證全部呼叫形狀」造成的。
+
+1) attempt to call missing method 'AddParagraph'
+   AddParagraph 原本只掛在分頁宿主上，但呼叫端也會對 section 呼叫
+   （BlockPrinterSelection:AddParagraph）。實際的 Fluent 允許任何 Add*
+   產生的物件再叫 Add*，我原本的結構是硬編碼的，層級一深就爆。
+
+   修正：在宿主上加入通用的子容器建立器。任何元素被建立時都會取得一組
+   Add*，委派到「以自己為父容器」的宿主。為避免把下拉選單建進一個小列
+   （浮動清單是以 mainFrame 為基準定位，會嚴重錯位），只有分頁與 section
+   會取得建構能力 —— 這是語意判斷（_isTab / _isSection），不是型別判斷，
+   因為我們的列本身也是 Frame。
+
+   同時把分頁層級重複的 AddParagraph 實作移除，改由宿主版本提供。
+
+2) 下拉選單的 Default 數字索引未被解析
+   Default 有三種形式：{"wheat"}（表）、"wheat"（字串）、1（數字索引）。
+   原本把數字直接當成選中值，選單會顯示「1」而不是對應選項，回呼收到的
+   也會是數字。實際 Fluent 會把索引解析成 Values[n]。
+
+   修正：新增 resolveDefaultIndex()，數字索引解析為 values[n]；
+   多選的 Default 表也一併支援數字元素。
+
+其他一併加固
+  - AddDropdown / AddColorpicker 對容器連 AbsolutePosition 訊號前先確認
+    可讀取，避免容器非 GuiObject 時出錯（改用 trackContainerPosition）。
+  - 修正 host.AddSection 的 Label 建立中 tostring 包錯位置。
+
+驗證
+  - 175 個控件呼叫點逐項對照，零遺漏
+  - 審查全部 :Add* 接收者，皆為 TAB 或 SECTION
+  - 頂層 local 199（未超過 200）、結構與括號全數配對
+  - IslandsUI.lua 重建後 8 項驗證全過
