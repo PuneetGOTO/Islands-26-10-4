@@ -1826,8 +1826,22 @@ local function CreateWindow(root, config)
     end)
 
     -- 快捷鍵：顯示/隱藏、最小化
-    local toggleKey = config.ToggleKey and Enum.KeyCode[config.ToggleKey] or nil
-    local minimizeKey = config.MinimizeKey and Enum.KeyCode[config.MinimizeKey] or nil
+    -- 注意：這兩者可能以「字串名稱」或「EnumItem 本身」傳入，
+    -- 例如 MinimizeKey = "LeftControl" 或 MinimizeKey = Enum.KeyCode.LeftControl。
+    -- 直接寫 Enum.KeyCode[x] 在 x 是 EnumItem 時會丟
+    -- "invalid argument #2 (string expected, got EnumItem)"。
+    local function toKeyCode(v)
+        if v == nil then return nil end
+        if typeof(v) == "EnumItem" then return v end
+        if type(v) == "string" then
+            local ok, res = pcall(function() return Enum.KeyCode[v] end)
+            if ok then return res end
+        end
+        return nil
+    end
+
+    local toggleKey = toKeyCode(config.ToggleKey)
+    local minimizeKey = toKeyCode(config.MinimizeKey)
 
     if toggleKey or minimizeKey then
         Track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
